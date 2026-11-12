@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows-binaries:
+    name: Release Build (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            run_e2e: true
+          - target: aarch64-pc-windows-msvc
+            run_e2e: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build standalone static-CRT release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Verify standalone binary E2E
+        if: matrix.run_e2e
+        shell: pwsh
+        run: .\scripts\verify-e2e.ps1 -ExePath "target\${{ matrix.target }}\release\veneer.exe" -AllowElevatedSession
+
+      - name: Package release archives & SHA-256 checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDir = "release-assets"
+          $stageDir   = "stage-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $stageDir "scripts") -Force | Out-Null
+
+          $exeSource = "target\${{ matrix.target }}\release\veneer.exe"
+          $standaloneExe = Join-Path $releaseDir "veneer-${{ matrix.target }}.exe"
+          Copy-Item $exeSource $standaloneExe -Force
+
+          Copy-Item $exeSource (Join-Path $stageDir "veneer.exe") -Force
+          Copy-Item "README.md" (Join-Path $stageDir "README.md") -Force
+          Copy-Item "scripts\verify-e2e.ps1" (Join-Path $stageDir "scripts\verify-e2e.ps1") -Force
+          Copy-Item "scripts\verify-e2e.cmd" (Join-Path $stageDir "scripts\verify-e2e.cmd") -Force
+
+          $zipName = "veneer-${{ matrix.target }}.zip"
+          $zipPath = Join-Path $releaseDir $zipName
+          Compress-Archive -Path "$stageDir\*" -DestinationPath $zipPath -Force
+
+          foreach ($file in Get-ChildItem -Path $releaseDir -File) {
+              $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash  $($file.Name)" | Out-File -FilePath "$($file.FullName).sha256" -Encoding ascii -NoNewline
+          }
+
+      - name: Upload release assets to workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish-github-release:
+    name: Publish GitHub Release
+    needs: build-windows-binaries
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all Windows release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate combined SHA256SUMS.txt
+        run: |
+          cd artifacts
+          cat *.sha256 | sed 's/$/\n/' > SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/veneer-*.exe
+            artifacts/veneer-*.zip
+            artifacts/*.sha256
+            artifacts/SHA256SUMS.txt

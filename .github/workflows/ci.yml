@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify-and-build:
+    name: Build & Verify (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            run_tests: true
+          - target: aarch64-pc-windows-msvc
+            run_tests: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry & build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Check formatting
+        if: matrix.run_tests
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy lints
+        run: cargo clippy --all-targets --locked --target ${{ matrix.target }} -- -D warnings
+
+      - name: Run unit tests
+        if: matrix.run_tests
+        run: cargo test --locked --target ${{ matrix.target }}
+
+      - name: Build standalone static-CRT release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Run End-to-End verification script
+        if: matrix.run_tests
+        shell: pwsh
+        run: .\scripts\verify-e2e.ps1 -ExePath "target\${{ matrix.target }}\release\veneer.exe" -AllowElevatedSession
+
+      - name: Package artifact & SHA-256 checksum
+        shell: pwsh
+        run: |
+          $dist = "dist"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          $binName = "veneer-${{ matrix.target }}.exe"
+          $binPath = Join-Path $dist $binName
+          Copy-Item "target\${{ matrix.target }}\release\veneer.exe" $binPath -Force
+          $hash = (Get-FileHash -Path $binPath -Algorithm SHA256).Hash.ToLower()
+          "$hash  $binName" | Out-File -FilePath "$binPath.sha256" -Encoding ascii -NoNewline
+
+      - name: Upload prebuilt Windows binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: veneer-${{ matrix.target }}
+          path: |
+            dist/veneer-${{ matrix.target }}.exe
+            dist/veneer-${{ matrix.target }}.exe.sha256
+          if-no-files-found: error

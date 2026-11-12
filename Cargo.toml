@@ -1,0 +1,29 @@
+[package]
+name = "veneer"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dragos"]
+description = "Zero-privilege aesthetic customization CLI for Windows 11"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+]
+
+[profile.release]
+opt-level = "z"        # Optimizează agresiv pentru dimensiunea binarului
+lto = true             # Link-Time Optimization complet
+codegen-units = 1      # Reduce redundanța la compilare
+panic = "abort"        # Elimină unwinding metadata
+strip = true           # Elimină toate simbolurile de debug

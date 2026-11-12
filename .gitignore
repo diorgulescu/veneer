@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# OS & editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary backup/test artifacts
+*.tmp
+*.bak
